@@ -11,7 +11,10 @@
     "discover:50": "node discover.js --max-scrolls 50",
     "analyze": "node analyze.js",
     "analyze:4h": "node analyze.js --hours 4",
-    "dashboard": "node server.js"
+    "dashboard": "node server.js",
+    "following:scan": "node follow-manager.js scan",
+    "follow:import": "node follow-manager.js import",
+    "unfollow:suggest": "node follow-manager.js suggest-unfollow"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

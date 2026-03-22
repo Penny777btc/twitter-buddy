@@ -187,6 +187,33 @@ function getTweetStats() {
   };
 }
 
+const FOLLOW_MANAGER_STATUSES = ["pending", "approved", "dismissed", "completed", "skipped"];
+
+function parseRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
+        reject(new Error("Request body too large"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      if (!body) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(body));
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
 // ========== HTML Dashboard ==========
 
 const DASHBOARD_HTML = `<!DOCTYPE html>
@@ -266,6 +293,29 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .md-content pre { background: #1c2732; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; }
   .md-content pre code { background: none; padding: 0; }
   .md-content blockquote { border-left: 3px solid #1d9bf0; padding-left: 12px; color: #71767b; margin: 8px 0; }
+  .manager-wrap { max-width: 1040px; padding: 24px 36px; }
+  .manager-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .manager-card { background: #16202a; border: 1px solid #2f3336; border-radius: 14px; padding: 16px; }
+  .manager-card h3 { margin: 0 0 8px; font-size: 15px; }
+  .manager-card .big { color: #1d9bf0; font-size: 28px; font-weight: 700; }
+  .manager-card .meta { margin-top: 6px; color: #71767b; font-size: 12px; }
+  .manager-panel { background: #16202a; border: 1px solid #2f3336; border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+  .manager-panel h3 { margin: 0 0 12px; font-size: 15px; }
+  .manager-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .manager-input, .manager-textarea { width: 100%; background: #0f1419; border: 1px solid #2f3336; color: #e7e9ea; border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+  .manager-input { max-width: 180px; }
+  .manager-textarea { min-height: 110px; resize: vertical; margin-top: 10px; }
+  .manager-list { display: grid; gap: 10px; margin-top: 14px; }
+  .manager-item { background: #0f1419; border: 1px solid #2f3336; border-radius: 12px; padding: 14px; }
+  .manager-item .title { font-size: 14px; font-weight: 700; }
+  .manager-item .meta { margin-top: 6px; color: #71767b; font-size: 12px; }
+  .manager-item .reason { margin-top: 8px; color: #e7e9ea; font-size: 13px; line-height: 1.5; }
+  .manager-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; border: 1px solid #2f3336; color: #71767b; }
+  .pill.ok { border-color: #00ba7c; color: #00ba7c; }
+  .pill.warn { border-color: #f4900c; color: #f4900c; }
+  .pill.dim { border-color: #2f3336; color: #71767b; }
+  .pill.info { border-color: #1d9bf0; color: #1d9bf0; }
 
   .toast { position: fixed; bottom: 30px; right: 30px; background: #16202a; border: 1px solid #2f3336; color: #e7e9ea; padding: 12px 20px; border-radius: 12px; font-size: 14px; z-index: 100; display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
   .toast.show { display: block; }
@@ -286,6 +336,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="view-tabs">
       <div class="view-tab active" onclick="switchView('analyses')">Analysis Reports</div>
       <div class="view-tab" onclick="switchView('discovers')">Discover</div>
+      <div class="view-tab" onclick="switchView('follow-manager')">Follow Manager</div>
       <div class="view-tab" onclick="switchView('stats')">Stats</div>
       <div class="view-tab" onclick="switchView('tweets')">Tweet Data Files</div>
     </div>
@@ -373,18 +424,19 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     document.getElementById('expand-btn').textContent = isExpanded ? 'Collapse' : 'Expand';
   }
 
-  const viewOrder = ['analyses', 'discovers', 'stats', 'tweets'];
+  const viewOrder = ['analyses', 'discovers', 'follow-manager', 'stats', 'tweets'];
   function switchView(view) {
     currentView = view;
     document.querySelectorAll('.view-tab').forEach((tab, i) => {
       tab.classList.toggle('active', viewOrder[i] === view);
     });
-    const isStats = view === 'stats';
-    document.getElementById('file-list').style.display = isStats ? 'none' : '';
-    document.getElementById('main-layout').style.gridTemplateColumns = isStats ? '1fr' : '280px 1fr';
+    const fullWidth = view === 'stats' || view === 'follow-manager';
+    document.getElementById('file-list').style.display = fullWidth ? 'none' : '';
+    document.getElementById('main-layout').style.gridTemplateColumns = fullWidth ? '1fr' : '280px 1fr';
     document.getElementById('content-header').style.display = 'none';
     if (view === 'analyses') { loadAnalyses(); document.getElementById('content-area').innerHTML = '<div class="placeholder">Select an item to view</div>'; }
     else if (view === 'discovers') { loadDiscovers(); document.getElementById('content-area').innerHTML = '<div class="placeholder">Select an item to view</div>'; }
+    else if (view === 'follow-manager') loadFollowManager();
     else if (view === 'stats') loadStats();
     else { loadTweetFiles(); document.getElementById('content-area').innerHTML = '<div class="placeholder">Select an item to view</div>'; }
   }
@@ -393,6 +445,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     await loadStatus();
     if (currentView === 'analyses') loadAnalyses();
     else if (currentView === 'discovers') loadDiscovers();
+    else if (currentView === 'follow-manager') loadFollowManager();
     else if (currentView === 'stats') loadStats();
     else loadTweetFiles();
   }
@@ -664,6 +717,283 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
   }
 
+  function formatMaybeTime(iso) {
+    return iso ? toUTC8(iso) : 'N/A';
+  }
+
+  function renderStatusPill(status) {
+    const cls = status === 'approved' ? 'ok'
+      : status === 'completed' ? 'info'
+      : status === 'dismissed' || status === 'skipped' ? 'dim'
+      : 'warn';
+    return '<span class="pill ' + cls + '">' + status + '</span>';
+  }
+
+  async function loadFollowManager() {
+    const [summaryRes, followingRes, candidatesRes, suggestionsRes, queueRes] = await Promise.all([
+      apiFetch('/api/follow-manager/summary'),
+      apiFetch('/api/follow-manager/following'),
+      apiFetch('/api/follow-manager/candidates'),
+      apiFetch('/api/follow-manager/unfollow-suggestions'),
+      apiFetch('/api/follow-manager/approved-queue')
+    ]);
+    const summary = await summaryRes.json();
+    const following = await followingRes.json();
+    const candidates = await candidatesRes.json();
+    const suggestions = await suggestionsRes.json();
+    const queue = await queueRes.json();
+
+    const candidateItems = candidates.candidates || [];
+    const suggestionItems = suggestions.suggestions || [];
+    const approvedFollow = queue.follow || [];
+    const approvedUnfollow = queue.unfollow || [];
+    const sessionQueue = [...approvedFollow, ...approvedUnfollow];
+    const sessionCurrent = sessionQueue[0] || null;
+
+    document.getElementById('content-area').innerHTML = \`
+      <div class="manager-wrap">
+        <div class="manager-grid">
+          <div class="manager-card">
+            <h3>Following Snapshot</h3>
+            <div class="big">\${summary.following.count || 0}</div>
+            <div class="meta">Last scan: \${formatMaybeTime(summary.following.scannedAt)}</div>
+          </div>
+          <div class="manager-card">
+            <h3>Follow Candidates</h3>
+            <div class="big">\${summary.candidates.pending || 0}</div>
+            <div class="meta">Pending / approved / done: \${summary.candidates.pending || 0} / \${summary.candidates.approved || 0} / \${summary.candidates.completed || 0}</div>
+          </div>
+          <div class="manager-card">
+            <h3>Unfollow Suggestions</h3>
+            <div class="big">\${summary.suggestions.pending || 0}</div>
+            <div class="meta">Pending / approved / done: \${summary.suggestions.pending || 0} / \${summary.suggestions.approved || 0} / \${summary.suggestions.completed || 0}</div>
+          </div>
+        </div>
+
+        <div class="manager-panel">
+          <h3>Approved Queue</h3>
+          <div class="manager-row">
+            <button class="analyze-btn" onclick="openApprovedQueue('follow', 10)">Open 10 follow profiles</button>
+            <button class="analyze-btn" onclick="openApprovedQueue('unfollow', 10)">Open 10 unfollow profiles</button>
+            <span class="meta">Approved follow: \${approvedFollow.length} | Approved unfollow: \${approvedUnfollow.length}</span>
+          </div>
+          <div class="manager-row" style="margin-top:10px">
+            <span class="meta">Batch open only launches approved profile pages in new tabs. You still confirm the action on X manually.</span>
+          </div>
+        </div>
+
+        <div class="manager-panel">
+          <h3>Session Mode</h3>
+          \${!sessionCurrent ? '<div class="meta">No approved items in queue.</div>' : \`
+            <div class="manager-item">
+              <div class="title">\${sessionCurrent.queueType === 'follow' ? 'Follow' : 'Unfollow'} @\${sessionCurrent.handle} \${renderStatusPill(sessionCurrent.status)}</div>
+              <div class="meta">\${sessionCurrent.queueType === 'follow' ? 'Candidate queue' : 'Unfollow queue'} | Remaining approved items: \${sessionQueue.length}</div>
+              <div class="reason">\${escapeHtml(sessionCurrent.bio || sessionCurrent.source || '') || '<span class="meta">No notes</span>'}</div>
+              <div class="manager-actions">
+                <button class="analyze-btn" onclick="window.open('\${sessionCurrent.url}', '_blank', 'noopener')">Open Current Profile</button>
+                <button class="analyze-btn" onclick="advanceSession('\${sessionCurrent.queueType}', '\${sessionCurrent.handle}', 'completed')">Mark Done</button>
+                <button class="analyze-btn" onclick="advanceSession('\${sessionCurrent.queueType}', '\${sessionCurrent.handle}', 'skipped')">Skip</button>
+                <button class="analyze-btn" onclick="advanceSession('\${sessionCurrent.queueType}', '\${sessionCurrent.handle}', 'approved')">Keep Approved</button>
+              </div>
+            </div>
+          \`}
+        </div>
+
+        <div class="manager-panel">
+          <h3>1. Scan current following list</h3>
+          <div class="manager-row">
+            <input id="scan-max-scrolls" class="manager-input" type="number" min="10" max="1000" value="120" />
+            <button class="analyze-btn" onclick="scanFollowingNow()">Scan Following</button>
+            <span class="meta">Reads your current following list into local storage for later rules and de-dup.</span>
+          </div>
+        </div>
+
+        <div class="manager-panel">
+          <h3>2. Import follow candidates</h3>
+          <div class="manager-row">
+            <span class="meta">Paste one @handle or x.com URL per line. Existing follows and duplicates are skipped.</span>
+          </div>
+          <textarea id="follow-candidate-input" class="manager-textarea" placeholder="@jack\nhttps://x.com/someone"></textarea>
+          <div class="manager-actions">
+            <button class="analyze-btn" onclick="importFollowCandidatesNow()">Import Candidates</button>
+          </div>
+          <div class="manager-list">
+            \${candidateItems.length === 0 ? '<div class="meta">No candidates yet.</div>' : candidateItems.map((item) => \`
+              <div class="manager-item">
+                <div class="title">@\${item.handle} \${renderStatusPill(item.status)}</div>
+                <div class="meta">Imported: \${formatMaybeTime(item.importedAt)} | Source: \${escapeHtml(item.source || '')}</div>
+                <div class="manager-actions">
+                  <button class="analyze-btn" onclick="window.open('\${item.url}', '_blank', 'noopener')">Open Profile</button>
+                  <button class="analyze-btn" onclick="updateCandidateStatus('\${item.handle}', 'approved')">Approve</button>
+                  <button class="analyze-btn" onclick="updateCandidateStatus('\${item.handle}', 'dismissed')">Dismiss</button>
+                  <button class="analyze-btn" onclick="updateCandidateStatus('\${item.handle}', 'completed')">Done</button>
+                  <button class="analyze-btn" onclick="updateCandidateStatus('\${item.handle}', 'skipped')">Skip</button>
+                  <button class="analyze-btn" onclick="updateCandidateStatus('\${item.handle}', 'pending')">Reset</button>
+                </div>
+              </div>
+            \`).join('')}
+          </div>
+        </div>
+
+        <div class="manager-panel">
+          <h3>3. Generate unfollow suggestions</h3>
+          <div class="manager-row">
+            <input id="unfollow-inactivity-days" class="manager-input" type="number" min="1" max="3650" value="\${(suggestions.rules && suggestions.rules.inactivityDays) || 30}" />
+            <input id="unfollow-bio-keywords" class="manager-input" style="max-width:360px" type="text" value="\${escapeHtml(((suggestions.rules && suggestions.rules.bioExcludeKeywords) || []).join(', '))}" placeholder="bot, giveaway, promo" />
+            <label class="meta"><input id="unfollow-review-protected" type="checkbox" \${(suggestions.rules && suggestions.rules.protectedAccountReview) ? 'checked' : ''} /> Review protected accounts</label>
+            <button class="analyze-btn" onclick="generateUnfollowSuggestionsNow()">Generate Suggestions</button>
+          </div>
+          <div class="manager-list">
+            \${suggestionItems.length === 0 ? '<div class="meta">No suggestions yet.</div>' : suggestionItems.map((item) => \`
+              <div class="manager-item">
+                <div class="title">@\${item.handle} \${item.name ? '(' + escapeHtml(item.name) + ')' : ''} \${renderStatusPill(item.status)}</div>
+                <div class="meta">Last seen: \${formatMaybeTime(item.lastSeenAt)} | Verified: \${item.isVerified ? 'yes' : 'no'} | Protected: \${item.isProtected ? 'yes' : 'no'}</div>
+                <div class="reason">\${escapeHtml(item.bio || '') || '<span class="meta">No bio</span>'}</div>
+                <div class="reason">\${item.reasons.map((reason) => '• ' + escapeHtml(reason)).join('<br>')}</div>
+                <div class="manager-actions">
+                  <button class="analyze-btn" onclick="window.open('\${item.url}', '_blank', 'noopener')">Open Profile</button>
+                  <button class="analyze-btn" onclick="updateSuggestionStatus('\${item.handle}', 'approved')">Approve</button>
+                  <button class="analyze-btn" onclick="updateSuggestionStatus('\${item.handle}', 'dismissed')">Dismiss</button>
+                  <button class="analyze-btn" onclick="updateSuggestionStatus('\${item.handle}', 'completed')">Done</button>
+                  <button class="analyze-btn" onclick="updateSuggestionStatus('\${item.handle}', 'skipped')">Skip</button>
+                  <button class="analyze-btn" onclick="updateSuggestionStatus('\${item.handle}', 'pending')">Reset</button>
+                </div>
+              </div>
+            \`).join('')}
+          </div>
+        </div>
+
+        <div class="manager-panel">
+          <h3>Execution boundary</h3>
+          <div class="meta">This manager does not auto-follow or auto-unfollow in the background. It only prepares queues, lets you approve items, and opens the profile page for manual action.</div>
+        </div>
+      </div>
+    \`;
+  }
+
+  async function openApprovedQueue(type, limit) {
+    const res = await apiFetch('/api/follow-manager/approved-queue?limit=' + encodeURIComponent(limit || 10));
+    const data = await res.json();
+    const items = (type === 'follow' ? data.follow : data.unfollow) || [];
+    if (!items.length) {
+      showToast('No approved ' + type + ' items to open.', 'error');
+      return;
+    }
+    items.forEach((item, index) => {
+      setTimeout(() => window.open(item.url, '_blank', 'noopener'), index * 150);
+    });
+    showToast('Opened ' + items.length + ' ' + type + ' profiles.', 'success');
+  }
+
+  async function advanceSession(queueType, handle, status) {
+    if (queueType === 'follow') await updateCandidateStatus(handle, status);
+    else await updateSuggestionStatus(handle, status);
+  }
+
+  async function scanFollowingNow() {
+    showToast('Scanning following list ...', '');
+    try {
+      const maxScrolls = parseInt(document.getElementById('scan-max-scrolls').value, 10) || 120;
+      const res = await apiFetch('/api/follow-manager/scan-following', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxScrolls })
+      });
+      const data = await res.json();
+      if (data.error) showToast(data.error, 'error');
+      else {
+        showToast('Following scan complete: ' + data.count + ' accounts.', 'success');
+        await loadFollowManager();
+      }
+    } catch (err) {
+      showToast('Scan failed: ' + err.message, 'error');
+    }
+  }
+
+  async function importFollowCandidatesNow() {
+    const text = document.getElementById('follow-candidate-input').value;
+    if (!text.trim()) {
+      showToast('Paste at least one handle or URL.', 'error');
+      return;
+    }
+    try {
+      const res = await apiFetch('/api/follow-manager/import-candidates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      const data = await res.json();
+      if (data.error) showToast(data.error, 'error');
+      else {
+        showToast('Imported ' + data.imported.length + ' candidates, skipped ' + data.skipped.length + '.', 'success');
+        document.getElementById('follow-candidate-input').value = '';
+        await loadFollowManager();
+      }
+    } catch (err) {
+      showToast('Import failed: ' + err.message, 'error');
+    }
+  }
+
+  async function generateUnfollowSuggestionsNow() {
+    try {
+      const inactivityDays = parseInt(document.getElementById('unfollow-inactivity-days').value, 10) || 30;
+      const keywords = document.getElementById('unfollow-bio-keywords').value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const protectedAccountReview = !!document.getElementById('unfollow-review-protected').checked;
+      const res = await apiFetch('/api/follow-manager/generate-unfollow-suggestions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inactivityDays, bioExcludeKeywords: keywords, protectedAccountReview })
+      });
+      const data = await res.json();
+      if (data.error) showToast(data.error, 'error');
+      else {
+        showToast('Generated ' + data.total + ' unfollow suggestions.', 'success');
+        await loadFollowManager();
+      }
+    } catch (err) {
+      showToast('Suggestion generation failed: ' + err.message, 'error');
+    }
+  }
+
+  async function updateCandidateStatus(handle, status) {
+    try {
+      const res = await apiFetch('/api/follow-manager/candidate-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handle, status })
+      });
+      const data = await res.json();
+      if (data.error) showToast(data.error, 'error');
+      else {
+        showToast('Updated @' + handle + ' to ' + status + '.', 'success');
+        await loadFollowManager();
+      }
+    } catch (err) {
+      showToast('Update failed: ' + err.message, 'error');
+    }
+  }
+
+  async function updateSuggestionStatus(handle, status) {
+    try {
+      const res = await apiFetch('/api/follow-manager/suggestion-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handle, status })
+      });
+      const data = await res.json();
+      if (data.error) showToast(data.error, 'error');
+      else {
+        showToast('Updated @' + handle + ' to ' + status + '.', 'success');
+        await loadFollowManager();
+      }
+    } catch (err) {
+      showToast('Update failed: ' + err.message, 'error');
+    }
+  }
+
   // Auto-collapse top bar on report scroll
   document.querySelector('.panel-content').addEventListener('scroll', function() {
     const bar = document.getElementById('top-bar');
@@ -713,18 +1043,9 @@ const server = http.createServer((req, res) => {
   }
 
   if (url.pathname === "/api/analyze" && req.method === "POST") {
-    let body = "";
-    req.on("data", chunk => {
-      body += chunk;
-      if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
-        sendJson(res, 413, { error: "Request body too large" });
-        req.destroy();
-      }
-    });
-    req.on("end", async () => {
-      if (res.writableEnded) return;
+    (async () => {
       try {
-        const { hours, model } = JSON.parse(body);
+        const { hours, model } = await parseRequestBody(req);
         const safeHours = Number(hours);
         if (!Number.isFinite(safeHours) || safeHours <= 0 || safeHours > 24 * 30) {
           sendJson(res, 400, { error: "Invalid hours value" });
@@ -741,9 +1062,129 @@ const server = http.createServer((req, res) => {
           });
         }
       } catch (err) {
+        sendJson(res, err.message === "Request body too large" ? 413 : 500, { error: err.message });
+      }
+    })();
+    return;
+  }
+
+  if (url.pathname === "/api/follow-manager/summary") {
+    const followManager = require("./follow-manager");
+    sendJson(res, 200, followManager.getManagerSummary());
+    return;
+  }
+
+  if (url.pathname === "/api/follow-manager/following") {
+    const followManager = require("./follow-manager");
+    sendJson(res, 200, followManager.getFollowingSnapshot());
+    return;
+  }
+
+  if (url.pathname === "/api/follow-manager/candidates") {
+    const followManager = require("./follow-manager");
+    sendJson(res, 200, followManager.getFollowCandidates());
+    return;
+  }
+
+  if (url.pathname === "/api/follow-manager/unfollow-suggestions") {
+    const followManager = require("./follow-manager");
+    sendJson(res, 200, followManager.getUnfollowSuggestions());
+    return;
+  }
+
+  if (url.pathname === "/api/follow-manager/approved-queue") {
+    const followManager = require("./follow-manager");
+    const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 20, 1), 50);
+    sendJson(res, 200, followManager.getApprovedQueue(limit));
+    return;
+  }
+
+  if (url.pathname === "/api/follow-manager/scan-following" && req.method === "POST") {
+    (async () => {
+      try {
+        const { maxScrolls } = await parseRequestBody(req);
+        const followManager = require("./follow-manager");
+        const result = await followManager.scanFollowing({ maxScrolls: Number(maxScrolls) || undefined });
+        sendJson(res, 200, { scannedAt: result.scannedAt, count: result.count });
+      } catch (err) {
         sendJson(res, 500, { error: err.message });
       }
-    });
+    })();
+    return;
+  }
+
+  if (url.pathname === "/api/follow-manager/import-candidates" && req.method === "POST") {
+    (async () => {
+      try {
+        const { text } = await parseRequestBody(req);
+        if (!String(text || "").trim()) {
+          sendJson(res, 400, { error: "No candidate input provided" });
+          return;
+        }
+        const followManager = require("./follow-manager");
+        sendJson(res, 200, followManager.importFollowCandidates(text));
+      } catch (err) {
+        sendJson(res, 500, { error: err.message });
+      }
+    })();
+    return;
+  }
+
+  if (url.pathname === "/api/follow-manager/generate-unfollow-suggestions" && req.method === "POST") {
+    (async () => {
+      try {
+        const body = await parseRequestBody(req);
+        const followManager = require("./follow-manager");
+        const result = followManager.buildUnfollowSuggestions(body);
+        sendJson(res, 200, { total: result.suggestions.length, updatedAt: result.updatedAt });
+      } catch (err) {
+        sendJson(res, 500, { error: err.message });
+      }
+    })();
+    return;
+  }
+
+  if (url.pathname === "/api/follow-manager/candidate-status" && req.method === "POST") {
+    (async () => {
+      try {
+        const { handle, status } = await parseRequestBody(req);
+        if (!handle || !FOLLOW_MANAGER_STATUSES.includes(status)) {
+          sendJson(res, 400, { error: "Invalid candidate status update" });
+          return;
+        }
+        const followManager = require("./follow-manager");
+        const result = followManager.updateCandidateStatus(String(handle).toLowerCase(), status);
+        if (!result) {
+          sendJson(res, 404, { error: "Candidate not found" });
+          return;
+        }
+        sendJson(res, 200, result);
+      } catch (err) {
+        sendJson(res, 500, { error: err.message });
+      }
+    })();
+    return;
+  }
+
+  if (url.pathname === "/api/follow-manager/suggestion-status" && req.method === "POST") {
+    (async () => {
+      try {
+        const { handle, status } = await parseRequestBody(req);
+        if (!handle || !FOLLOW_MANAGER_STATUSES.includes(status)) {
+          sendJson(res, 400, { error: "Invalid suggestion status update" });
+          return;
+        }
+        const followManager = require("./follow-manager");
+        const result = followManager.updateSuggestionStatus(String(handle).toLowerCase(), status);
+        if (!result) {
+          sendJson(res, 404, { error: "Suggestion not found" });
+          return;
+        }
+        sendJson(res, 200, result);
+      } catch (err) {
+        sendJson(res, 500, { error: err.message });
+      }
+    })();
     return;
   }
 

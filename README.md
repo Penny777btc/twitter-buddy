@@ -11,6 +11,7 @@ Your personal Twitter/X assistant that automatically scrolls your timeline, coll
 - **Auto-collect tweets** — Launches Chrome, switches to your "Following" timeline (sorted by latest), scrolls and saves every tweet with deduplication
 - **AI analysis** — Periodically sends collected tweets to your configured LLM provider for trend analysis, key highlights, and sentiment summary
 - **Account discovery** — Scrolls the "For You" tab and uses your configured LLM provider to find high-quality accounts worth following
+- **Follow manager** — Scan your current following list, import follow candidates, and generate unfollow suggestions for manual review
 - **Dashboard** — Web UI to view analysis reports, discover reports, tweet volume charts, and trigger manual runs
 
 ## Requirements
@@ -80,6 +81,8 @@ npm run daemon
 | `npm run discover` | Discover accounts from "For You" |
 | `npm run discover:50` | Quick discovery (50 scrolls) |
 | `npm run dashboard` | Start dashboard only |
+| `npm run following:scan` | Scan the accounts you currently follow |
+| `npm run unfollow:suggest` | Generate local unfollow suggestions from saved rules |
 | `npm run login` | Log in to Twitter |
 
 ### Dashboard
@@ -88,8 +91,22 @@ Open `http://localhost:3456` after starting the daemon or dashboard.
 
 - **Analysis Reports** — AI-generated trend reports with next auto-run countdown
 - **Discover** — Account recommendations with "Run Now" button
+- **Follow Manager** — Following scan, candidate import, manual review queues for follow / unfollow
 - **Stats** — Tweet volume charts by hour/day
 - **Tweet Data Files** — Raw collected data
+
+### Follow Manager Workflow
+
+The follow manager is intentionally semi-automatic:
+
+1. Run a following scan to build a local snapshot of accounts you already follow.
+2. Paste candidate `@handles` or `x.com/...` profile URLs into the dashboard.
+3. Generate unfollow suggestions using conservative rules like inactivity or bio keywords.
+4. Approve or dismiss each item in the dashboard.
+5. Use `Approved Queue` to batch-open approved profiles, or `Session Mode` to process them one by one.
+6. Complete the follow / unfollow action manually in X.
+
+This project does **not** background-click follow / unfollow buttons in bulk.
 
 ## Configuration
 
@@ -100,6 +117,10 @@ Edit `config.js` to customize:
 - `daemon.analysisIntervalMs` — Analysis frequency (default: 2 hours)
 - `discover.intervalMs` — Discovery frequency (default: 6 hours)
 - `discover.maxScrolls` — How far to scroll "For You" (default: 100)
+- `followManager.scanMaxScrolls` — How far to scroll when scanning your following list
+- `followManager.inactivityDays` — Default inactivity threshold for unfollow suggestions
+- `followManager.bioExcludeKeywords` — Comma-separated bio keywords to flag for manual review
+- `followManager.protectedAccountReview` — Whether protected accounts should be suggested for review
 - `llm.provider` — `codex-cli` or `anthropic`
 - `codex.bin` / `codex.model` — Codex CLI binary and optional model override
 - `analysis.model` / `discover.model` — Anthropic model to use when `llm.provider=anthropic`
@@ -122,7 +143,7 @@ The default analysis report now follows a fixed structured template:
 - `5. 关键人物本期表现`
 - `6. 跨维度联动观察`
 
-The canonical prompt for this report lives in [prompts/analysis-report.md](/Users/pennys/conductor/workspaces/twitter-buddy/madison/prompts/analysis-report.md). Update that file if you want to change the default report rules for manual runs and daemon-generated reports.
+The canonical prompt for this report lives in [prompts/analysis-report.md](/Users/pennys/conductor/repos/twitter-buddy/prompts/analysis-report.md). Update that file if you want to change the default report rules for manual runs and daemon-generated reports.
 
 ## Data Storage
 
@@ -133,6 +154,7 @@ data/
 ├── tweets/          # tweets_YYYY-MM-DD.json (per-day, deduplicated)
 ├── analysis/        # analysis_YYYY-MM-DD-HH-MM.md
 ├── discover/        # discover_YYYY-MM-DD-HH-MM.md
+├── follow-manager/  # following snapshot, candidates, unfollow suggestions
 └── state.json       # daemon state (last run times, gaps, etc.)
 ```
 
@@ -167,6 +189,7 @@ If you expose the dashboard beyond the local machine, set `DASHBOARD_TOKEN` firs
 - **自动采集推文** — 启动 Chrome，切到 "Following" 时间线（最新排序），自动滚动采集，按天去重保存
 - **AI 分析** — 定时把采集到的推文发给你配置的 LLM 提供方分析，输出热点话题、重点推文、情绪倾向
 - **账号发现** — 自动刷 "为你推荐" 标签页，用你配置的 LLM 提供方找出值得关注的高质量账号
+- **关注管理** — 扫描当前 following 列表、导入待关注账号、按规则生成待取关建议，供人工审核
 - **Dashboard** — 网页界面查看分析报告、发现报告、推文数量图表，支持手动触发
 
 ### 快速开始
@@ -202,8 +225,23 @@ npm run daemon
 | `npm run collect` | 单次采集推文 |
 | `npm run analyze` | 分析最近 48 小时推文 |
 | `npm run discover` | 发现值得关注的账号 |
+| `npm run following:scan` | 扫描当前 following 列表 |
+| `npm run unfollow:suggest` | 生成本地待取关建议 |
 | `npm run dashboard` | 只启动 Dashboard |
 | `npm run login` | 登录推特 |
+
+### 关注管理工作流
+
+`Follow Manager` 采用半自动模式：
+
+1. 先扫描当前 following 列表，建立本地快照。
+2. 在 dashboard 里粘贴待关注的 `@handle` 或主页链接。
+3. 按“不活跃 / bio 关键词 / 受保护账号”等规则生成待取关建议。
+4. 逐条批准或忽略。
+5. 用 `Approved Queue` 批量打开已批准主页，或在 `Session Mode` 里逐个处理。
+6. 在 X 页面里手动完成关注或取关。
+
+默认不会在后台自动批量点 `Follow / Unfollow`。
 
 ### 部署
 
@@ -219,6 +257,7 @@ npm run daemon
 - 如果想减少上传内容，可以在 `config.js` 里启用 `redactBeforeUpload`、`redactLinks`，或者调低 `maxTweetLength`。
 - `.env`、`.chrome-profile` 和 `data/` 已在 `.gitignore` 中排除。
 - `.chrome-profile` 含有 X 登录态，建议只放在可信机器上，不要同步到共享目录或网盘。
+<<<<<<< HEAD
 
 ### 分析报告格式
 
@@ -233,3 +272,5 @@ npm run daemon
 - `跨维度联动观察`
 
 如果你后面还想继续调整这套规则，直接改 [prompts/analysis-report.md](/Users/pennys/conductor/workspaces/twitter-buddy/madison/prompts/analysis-report.md) 即可，手动分析和 daemon 自动分析都会跟着更新。
+=======
+>>>>>>> 17fac42 (Add follow manager and Codex-powered analysis)

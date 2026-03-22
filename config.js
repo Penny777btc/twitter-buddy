@@ -86,10 +86,25 @@ module.exports = {
     maxBodyBytes: 16 * 1024,
   },
 
+  // Follow manager 配置
+  followManager: {
+    scanMaxScrolls: Number(process.env.FOLLOW_SCAN_MAX_SCROLLS) || 120,
+    inactivityDays: Number(process.env.UNFOLLOW_INACTIVITY_DAYS) || 30,
+    bioExcludeKeywords: (process.env.UNFOLLOW_BIO_EXCLUDE_KEYWORDS || "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+    protectedAccountReview: process.env.UNFOLLOW_REVIEW_PROTECTED === "1",
+  },
+
   // 数据目录
   dataDir: path.join(__dirname, "data"),
   tweetsDir: path.join(__dirname, "data", "tweets"),
   analysisDir: path.join(__dirname, "data", "analysis"),
   discoverDir: path.join(__dirname, "data", "discover"),
+  followManagerDir: path.join(__dirname, "data", "follow-manager"),
+  followingSnapshotFile: path.join(__dirname, "data", "follow-manager", "following-snapshot.json"),
+  followCandidatesFile: path.join(__dirname, "data", "follow-manager", "follow-candidates.json"),
+  unfollowSuggestionsFile: path.join(__dirname, "data", "follow-manager", "unfollow-suggestions.json"),
   stateFile: path.join(__dirname, "data", "state.json"),
 };
