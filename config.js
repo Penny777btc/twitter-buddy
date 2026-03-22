@@ -1,8 +1,23 @@
+const fs = require("fs");
 const path = require("path");
+
+const analysisPromptFile = path.join(__dirname, "prompts", "analysis-report.md");
+const analysisPrompt = fs.readFileSync(analysisPromptFile, "utf-8").trim();
 
 module.exports = {
   // Chrome 配置
   chromeDataDir: path.join(__dirname, ".chrome-profile"),
+
+  // LLM provider 配置
+  llm: {
+    provider: process.env.LLM_PROVIDER || "codex-cli",
+  },
+
+  // Codex CLI 配置
+  codex: {
+    bin: process.env.CODEX_BIN || "codex",
+    model: process.env.CODEX_MODEL || "",
+  },
 
   // 采集配置
   scroll: {
@@ -28,17 +43,11 @@ module.exports = {
   analysis: {
     model: "claude-opus-4-6",
     maxTokens: 4096,
-    analysisHours: 2, // 分析最近几小时的推文
-    prompt: `你是一个推特时间线分析助手。以下是最近一段时间采集到的推文数据（JSON 格式）。
-
-请用中文分析：
-1. **主要话题和趋势**：当前讨论的热点是什么
-2. **值得重点关注的推文**：突发新闻、alpha 信息、深度见解、重要公告。每条都要给出推文摘要和原文链接（用 Markdown 格式 [摘要](链接)），方便直接点击查看
-3. **整体情绪倾向**：乐观/悲观/中性，以及原因
-4. **值得跟进的讨论**：有哪些对话串或话题值得深入关注，附上相关推文链接
-5. **值得关注的人物**：提到任何推特用户时，都用 Markdown 链接格式 [@用户名](https://x.com/用户名)，方便直接点击查看主页
-
-关注重点：加密货币、AI/科技、宏观经济、地缘政治`,
+    analysisHours: 48, // 分析最近几小时的推文
+    redactBeforeUpload: false,
+    redactLinks: false,
+    maxTweetLength: 2000,
+    prompt: analysisPrompt,
   },
 
   // 账号发现配置
@@ -47,6 +56,9 @@ module.exports = {
     intervalMs: 6 * 60 * 60 * 1000, // daemon 中每 6 小时跑一次
     model: "claude-sonnet-4-6",
     maxTokens: 4096,
+    redactBeforeUpload: false,
+    redactLinks: false,
+    maxTweetLength: 2000,
     prompt: `你是一个推特账号发现助手。以下是从"为你推荐"(For You) 时间线采集到的推文数据（JSON 格式）。
 
 请用中文分析并推荐值得关注的账号：
@@ -67,7 +79,12 @@ module.exports = {
   },
 
   // Dashboard 配置
-  dashboard: { port: 3456 },
+  dashboard: {
+    host: process.env.DASHBOARD_HOST || "127.0.0.1",
+    port: Number(process.env.DASHBOARD_PORT) || 3456,
+    authToken: process.env.DASHBOARD_TOKEN || "",
+    maxBodyBytes: 16 * 1024,
+  },
 
   // 数据目录
   dataDir: path.join(__dirname, "data"),
