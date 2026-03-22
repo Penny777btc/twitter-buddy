@@ -1,7 +1,7 @@
-const Anthropic = require("@anthropic-ai/sdk");
 const fs = require("fs");
 const path = require("path");
 const config = require("./config");
+const { generateText } = require("./llm");
 
 const dotenvResult = require("dotenv").config({ path: path.join(__dirname, ".env") });
 if (dotenvResult.parsed) {
@@ -14,6 +14,40 @@ if (dotenvResult.parsed) {
 function log(msg) {
   const ts = new Date().toLocaleTimeString();
   console.log(`[${ts}] [analyze] ${msg}`);
+}
+
+function redactText(text, maxLen) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  return clean.length > maxLen ? `${clean.slice(0, maxLen)}...` : clean;
+}
+
+function prepareTweetForUpload(tweet) {
+  const maxLen = config.analysis.maxTweetLength || 2000;
+  const redact = !!config.analysis.redactBeforeUpload;
+  const redactLinks = redact || !!config.analysis.redactLinks;
+  const prepared = {
+    ...tweet,
+    text: redactText(tweet.text, maxLen),
+  };
+
+  if (tweet.quoted) {
+    prepared.quoted = {
+      ...tweet.quoted,
+      text: redactText(tweet.quoted.text, Math.min(maxLen, 300)),
+    };
+  }
+
+  if (redact) {
+    prepared.user = "[redacted-user]";
+    if (prepared.quoted) prepared.quoted.user = "[redacted-user]";
+  }
+
+  if (redactLinks) {
+    prepared.link = "";
+    if (prepared.quoted) prepared.quoted.link = "";
+  }
+
+  return prepared;
 }
 
 /**
@@ -64,7 +98,8 @@ function loadTweetsSince(hoursAgo) {
  * 构建分析用的推文摘要（减少 token 用量）
  */
 function buildTweetSummary(tweets) {
-  return tweets.map((t, i) => {
+  return tweets.map((raw, i) => {
+    const t = prepareTweetForUpload(raw);
     let line = `[${i + 1}] ${t.time} | ${t.user} | [${t.type}] ${t.text}`;
     if (t.link) line += `\n    🔗 ${t.link}`;
     if (t.quoted) {
@@ -92,25 +127,19 @@ async function runAnalysis(hoursAgo, model) {
   }
 
   log(`Found ${tweets.length} tweets for analysis.`);
+  if (config.analysis.redactBeforeUpload || config.analysis.redactLinks) {
+    log("Privacy mode enabled for Claude upload.");
+  }
 
   const tweetSummary = buildTweetSummary(tweets);
 
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  log(`Calling ${config.llm.provider} for analysis ...`);
 
-  log(`Calling Claude API (${useModel}) ...`);
-
-  const message = await client.messages.create({
-    model: useModel,
-    max_tokens: config.analysis.maxTokens,
-    messages: [
-      {
-        role: "user",
-        content: `${config.analysis.prompt}\n\n---\n\n以下是最近 ${hoursAgo} 小时的 ${tweets.length} 条推文：\n\n${tweetSummary}`,
-      },
-    ],
+  const analysisText = await generateText({
+    prompt: `${config.analysis.prompt}\n\n---\n\n以下是最近 ${hoursAgo} 小时的 ${tweets.length} 条推文：\n\n${tweetSummary}`,
+    anthropicModel: useModel,
+    maxTokens: config.analysis.maxTokens,
   });
-
-  const analysisText = message.content[0].text;
 
   // 保存分析结果
   fs.mkdirSync(config.analysisDir, { recursive: true });

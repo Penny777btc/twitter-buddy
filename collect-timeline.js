@@ -10,6 +10,16 @@ function log(msg) {
 
 const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
+function warnIfProfilePermissionsAreWideOpen(profileDir) {
+  try {
+    if (process.platform === "win32" || !fs.existsSync(profileDir)) return;
+    const stat = fs.statSync(profileDir);
+    if ((stat.mode & 0o077) !== 0) {
+      log(`Warning: ${profileDir} is accessible by group/others. Consider chmod 700 to better protect your X session.`);
+    }
+  } catch {}
+}
+
 // 注入页面的扫描函数：扫描当前 DOM 中的推文，存入 window._tweetMap
 const SCAN_TWEETS_FN = `
 (() => {
@@ -76,8 +86,10 @@ const EXTRACT_ALL_FN = `
  * 启动浏览器（带反检测）
  */
 async function launchBrowser(chromeDataDir) {
+  const profileDir = chromeDataDir || config.chromeDataDir;
+  warnIfProfilePermissionsAreWideOpen(profileDir);
   const browser = await chromium.launchPersistentContext(
-    chromeDataDir || config.chromeDataDir,
+    profileDir,
     {
       channel: "chrome",
       headless: false,

@@ -1,14 +1,48 @@
-const Anthropic = require("@anthropic-ai/sdk");
 const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 const { launchBrowser, collectTweets, saveTweets, log } = require("./collect-timeline");
+const { generateText } = require("./llm");
 
 const dotenvResult = require("dotenv").config({ path: path.join(__dirname, ".env") });
 if (dotenvResult.parsed) {
   for (const [k, v] of Object.entries(dotenvResult.parsed)) {
     if (!process.env[k]) process.env[k] = v;
   }
+}
+
+function redactText(text, maxLen) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  return clean.length > maxLen ? `${clean.slice(0, maxLen)}...` : clean;
+}
+
+function prepareTweetForUpload(tweet) {
+  const maxLen = config.discover.maxTweetLength || 2000;
+  const redact = !!config.discover.redactBeforeUpload;
+  const redactLinks = redact || !!config.discover.redactLinks;
+  const prepared = {
+    ...tweet,
+    text: redactText(tweet.text, maxLen),
+  };
+
+  if (tweet.quoted) {
+    prepared.quoted = {
+      ...tweet.quoted,
+      text: redactText(tweet.quoted.text, Math.min(maxLen, 300)),
+    };
+  }
+
+  if (redact) {
+    prepared.user = "[redacted-user]";
+    if (prepared.quoted) prepared.quoted.user = "[redacted-user]";
+  }
+
+  if (redactLinks) {
+    prepared.link = "";
+    if (prepared.quoted) prepared.quoted.link = "";
+  }
+
+  return prepared;
 }
 
 /**
@@ -72,7 +106,8 @@ async function navigateToForYou(page) {
  * 构建推文摘要（供 LLM 分析用）
  */
 function buildTweetSummary(tweets) {
-  return tweets.map((t, i) => {
+  return tweets.map((raw, i) => {
+    const t = prepareTweetForUpload(raw);
     let line = `[${i + 1}] ${t.time} | ${t.user} | [${t.type}] ${t.text}`;
     if (t.link) line += `\n    🔗 ${t.link}`;
     if (t.quoted) {
@@ -94,24 +129,19 @@ async function analyzeForDiscover(tweets) {
   }
 
   log(`[discover] Analyzing ${tweets.length} tweets for account discovery ...`);
+  if (config.discover.redactBeforeUpload || config.discover.redactLinks) {
+    log("[discover] Privacy mode enabled for Claude upload.");
+  }
 
   const tweetSummary = buildTweetSummary(tweets);
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
   const discoverPrompt = config.discover.prompt;
+  log(`[discover] Calling ${config.llm.provider} for discovery ...`);
 
-  const message = await client.messages.create({
-    model: config.discover.model || config.analysis.model,
-    max_tokens: config.discover.maxTokens || config.analysis.maxTokens,
-    messages: [
-      {
-        role: "user",
-        content: `${discoverPrompt}\n\n---\n\n以下是从"为你推荐"采集到的 ${tweets.length} 条推文：\n\n${tweetSummary}`,
-      },
-    ],
+  const analysisText = await generateText({
+    prompt: `${discoverPrompt}\n\n---\n\n以下是从"为你推荐"采集到的 ${tweets.length} 条推文：\n\n${tweetSummary}`,
+    anthropicModel: config.discover.model || config.analysis.model,
+    maxTokens: config.discover.maxTokens || config.analysis.maxTokens,
   });
-
-  const analysisText = message.content[0].text;
 
   // 保存结果
   fs.mkdirSync(config.discoverDir, { recursive: true });

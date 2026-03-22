@@ -3,7 +3,39 @@ const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 
+try {
+  const dotenvResult = require("dotenv").config({ path: path.join(__dirname, ".env") });
+  if (dotenvResult.parsed) {
+    for (const [k, v] of Object.entries(dotenvResult.parsed)) {
+      if (!process.env[k]) process.env[k] = v;
+    }
+  }
+} catch {}
+
+const DASHBOARD_HOST = config.dashboard?.host || "127.0.0.1";
 const PORT = config.dashboard?.port || 3456;
+const DASHBOARD_TOKEN = config.dashboard?.authToken || "";
+const MAX_BODY_BYTES = config.dashboard?.maxBodyBytes || 16 * 1024;
+
+function sendJson(res, statusCode, payload) {
+  res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(payload));
+}
+
+function requireAuth(req, res) {
+  if (!DASHBOARD_TOKEN) return true;
+
+  const authHeader = req.headers["authorization"] || "";
+  const bearerPrefix = "Bearer ";
+  const token = authHeader.startsWith(bearerPrefix)
+    ? authHeader.slice(bearerPrefix.length)
+    : req.headers["x-dashboard-token"];
+
+  if (token === DASHBOARD_TOKEN) return true;
+
+  sendJson(res, 401, { error: "Unauthorized" });
+  return false;
+}
 
 // ========== API Handlers ==========
 
@@ -292,6 +324,40 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <script>
   let currentView = 'analyses';
   let isExpanded = false;
+  let dashboardToken = localStorage.getItem('dashboardToken') || '';
+
+  function escapeHtml(text) {
+    return String(text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function renderMarkdownSafe(md) {
+    return marked.parse(escapeHtml(md));
+  }
+
+  async function apiFetch(url, options) {
+    const opts = Object.assign({}, options || {});
+    opts.headers = Object.assign({}, opts.headers || {});
+    if (dashboardToken) opts.headers['Authorization'] = 'Bearer ' + dashboardToken;
+    let res = await fetch(url, opts);
+    if (res.status === 401) {
+      const provided = window.prompt('Dashboard token required');
+      if (!provided) return res;
+      dashboardToken = provided.trim();
+      localStorage.setItem('dashboardToken', dashboardToken);
+      opts.headers['Authorization'] = 'Bearer ' + dashboardToken;
+      res = await fetch(url, opts);
+      if (res.status === 401) {
+        localStorage.removeItem('dashboardToken');
+        dashboardToken = '';
+      }
+    }
+    return res;
+  }
 
   function showToast(msg, type) {
     const t = document.getElementById('toast');
@@ -339,7 +405,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
   let _statusData = null;
   async function loadStatus() {
-    const res = await fetch('/api/status');
+    const res = await apiFetch('/api/status');
     _statusData = await res.json();
     const s = _statusData.state;
     const lastCol = s.lastCollectionTime ? toUTC8(s.lastCollectionTime) : 'N/A';
@@ -367,7 +433,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   }
 
   async function loadAnalyses() {
-    const res = await fetch('/api/analyses');
+    const res = await apiFetch('/api/analyses');
     const files = await res.json();
     const list = document.getElementById('file-list');
     const nextAnalysis = _statusData ? calcNextRun(_statusData.state.lastAnalysisTime, _statusData.analysisIntervalMs) : '...';
@@ -388,9 +454,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   async function loadAnalysis(filename, el) {
     document.querySelectorAll('.file-item').forEach(e => e.classList.remove('active'));
     if (el) el.classList.add('active');
-    const res = await fetch('/api/analysis/' + encodeURIComponent(filename));
+    const res = await apiFetch('/api/analysis/' + encodeURIComponent(filename));
     const md = await res.text();
-    const html = marked.parse(md);
+    const html = renderMarkdownSafe(md);
     document.getElementById('content-header').style.display = 'flex';
     document.getElementById('content-title').textContent = filename;
     document.getElementById('content-area').innerHTML = '<div class="md-content">' + html + '</div>';
@@ -398,7 +464,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   }
 
   async function loadDiscovers() {
-    const res = await fetch('/api/discovers');
+    const res = await apiFetch('/api/discovers');
     const files = await res.json();
     const list = document.getElementById('file-list');
     const nextDiscover = _statusData ? calcNextRun(_statusData.state.lastDiscoverTime, _statusData.discoverIntervalMs) : '...';
@@ -423,9 +489,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   async function loadDiscover(filename, el) {
     document.querySelectorAll('.file-item').forEach(e => e.classList.remove('active'));
     if (el) el.classList.add('active');
-    const res = await fetch('/api/discover/' + encodeURIComponent(filename));
+    const res = await apiFetch('/api/discover/' + encodeURIComponent(filename));
     const md = await res.text();
-    const html = marked.parse(md);
+    const html = renderMarkdownSafe(md);
     document.getElementById('content-header').style.display = 'flex';
     document.getElementById('content-title').textContent = filename;
     document.getElementById('content-area').innerHTML = '<div class="md-content">' + html + '</div>';
@@ -437,7 +503,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     if (btn) { btn.classList.add('running'); btn.disabled = true; btn.textContent = 'Running...'; }
     showToast('Starting account discovery ...', '');
     try {
-      const res = await fetch('/api/discover', { method: 'POST' });
+      const res = await apiFetch('/api/discover', { method: 'POST' });
       const data = await res.json();
       if (data.error) {
         showToast('Discover failed: ' + data.error, 'error');
@@ -457,7 +523,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   async function loadStats(mode) {
     const area = document.getElementById('content-area');
     area.innerHTML = '<div style="padding:20px;color:#71767b">Loading stats...</div>';
-    const res = await fetch('/api/tweet-stats');
+    const res = await apiFetch('/api/tweet-stats');
     const data = await res.json();
     const curMode = mode || 'byDay';
 
@@ -545,7 +611,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   }
 
   async function loadTweetFiles() {
-    const res = await fetch('/api/tweets');
+    const res = await apiFetch('/api/tweets');
     const files = await res.json();
     const list = document.getElementById('file-list');
     if (files.length === 0) {
@@ -578,7 +644,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     btns.forEach(b => { b.classList.add('running'); b.disabled = true; });
     showToast('Running analysis for ' + hours + 'h ...', '');
     try {
-      const res = await fetch('/api/analyze', {
+      const res = await apiFetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ hours, model: document.getElementById('model-select').value })
@@ -616,6 +682,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
+  if (url.pathname !== "/" && !requireAuth(req, res)) {
+    return;
+  }
+
   if (url.pathname === "/") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(DASHBOARD_HTML);
@@ -623,63 +693,67 @@ const server = http.createServer((req, res) => {
   }
 
   if (url.pathname === "/api/status") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(getStatus()));
+    sendJson(res, 200, getStatus());
     return;
   }
 
   if (url.pathname === "/api/tweets") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(getTweetFiles()));
+    sendJson(res, 200, getTweetFiles());
     return;
   }
 
   if (url.pathname === "/api/tweet-stats") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(getTweetStats()));
+    sendJson(res, 200, getTweetStats());
     return;
   }
 
   if (url.pathname === "/api/analyses") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(getAnalyses()));
+    sendJson(res, 200, getAnalyses());
     return;
   }
 
   if (url.pathname === "/api/analyze" && req.method === "POST") {
     let body = "";
-    req.on("data", chunk => body += chunk);
+    req.on("data", chunk => {
+      body += chunk;
+      if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
+        sendJson(res, 413, { error: "Request body too large" });
+        req.destroy();
+      }
+    });
     req.on("end", async () => {
+      if (res.writableEnded) return;
       try {
         const { hours, model } = JSON.parse(body);
+        const safeHours = Number(hours);
+        if (!Number.isFinite(safeHours) || safeHours <= 0 || safeHours > 24 * 30) {
+          sendJson(res, 400, { error: "Invalid hours value" });
+          return;
+        }
         const { runAnalysis } = require("./analyze");
-        const result = await runAnalysis(hours || 2, model);
+        const result = await runAnalysis(safeHours, model);
         if (!result) {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "No tweets found in this time range" }));
+          sendJson(res, 200, { error: "No tweets found in this time range" });
         } else {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({
+          sendJson(res, 200, {
             filename: path.basename(result.filepath),
             tweetCount: result.tweetCount,
-          }));
+          });
         }
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: err.message }));
+        sendJson(res, 500, { error: err.message });
       }
     });
     return;
   }
 
   if (url.pathname === "/api/discover" && req.method === "POST") {
-    res.writeHead(200, { "Content-Type": "application/json" });
     (async () => {
       try {
         const { runDiscover } = require("./discover");
         const result = await runDiscover();
         if (!result) {
-          res.end(JSON.stringify({ error: "No tweets collected from For You" }));
+          sendJson(res, 200, { error: "No tweets collected from For You" });
         } else {
           // 更新 state 的 lastDiscoverTime
           try {
@@ -687,18 +761,17 @@ const server = http.createServer((req, res) => {
             stateData.lastDiscoverTime = new Date().toISOString();
             fs.writeFileSync(config.stateFile, JSON.stringify(stateData, null, 2), "utf-8");
           } catch {}
-          res.end(JSON.stringify({ filename: result.filename, tweetCount: result.tweetCount }));
+          sendJson(res, 200, { filename: result.filename, tweetCount: result.tweetCount });
         }
       } catch (err) {
-        res.end(JSON.stringify({ error: err.message }));
+        sendJson(res, 500, { error: err.message });
       }
     })();
     return;
   }
 
   if (url.pathname === "/api/discovers") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(getDiscovers()));
+    sendJson(res, 200, getDiscovers());
     return;
   }
 
@@ -733,8 +806,8 @@ const server = http.createServer((req, res) => {
 });
 
 function startDashboard() {
-  server.listen(PORT, () => {
-    console.log(`Dashboard running at http://localhost:${PORT}`);
+  server.listen(PORT, DASHBOARD_HOST, () => {
+    console.log(`Dashboard running at http://${DASHBOARD_HOST === "127.0.0.1" ? "localhost" : DASHBOARD_HOST}:${PORT}`);
   });
 }
 
