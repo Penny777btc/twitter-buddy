@@ -257,7 +257,6 @@ npm run daemon
 - 如果想减少上传内容，可以在 `config.js` 里启用 `redactBeforeUpload`、`redactLinks`，或者调低 `maxTweetLength`。
 - `.env`、`.chrome-profile` 和 `data/` 已在 `.gitignore` 中排除。
 - `.chrome-profile` 含有 X 登录态，建议只放在可信机器上，不要同步到共享目录或网盘。
-<<<<<<< HEAD
 
 ### 分析报告格式
 
@@ -271,6 +270,4 @@ npm run daemon
 - `关键人物本期表现`
 - `跨维度联动观察`
 
-如果你后面还想继续调整这套规则，直接改 [prompts/analysis-report.md](/Users/pennys/conductor/workspaces/twitter-buddy/madison/prompts/analysis-report.md) 即可，手动分析和 daemon 自动分析都会跟着更新。
-=======
->>>>>>> 17fac42 (Add follow manager and Codex-powered analysis)
+如果你后面还想继续调整这套规则，直接改 [prompts/analysis-report.md](/Users/pennys/conductor/repos/twitter-buddy/prompts/analysis-report.md) 即可，手动分析和 daemon 自动分析都会跟着更新。
